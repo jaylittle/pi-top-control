@@ -3,6 +3,7 @@
 import sys
 import smbus
 from spidev import SpiDev
+from time import sleep
 
 # Pi-Top Battery Address & Registers
 PI_BUS = 1
@@ -12,7 +13,7 @@ PI_TOP_BATTERY_REGISTER_STATE = 0x0a
 PI_TOP_BATTERY_REGISTER_DISCHARGE_TIME = 0x12
 PI_TOP_BATTERY_REGISTER_CHARGING_TIME = 0x13
 PI_TOP_BATTERY_REGISTER_CAPACITY = 0x0d
-PI_TOP_BATTERY_STATE_MASK = int('1000000000000000', 2)
+PI_TOP_BATTERY_STATE_MASK = 0x20000000
 
 PI_TOP_HUB_COMMAND_GET_STATUS = 0xFF
 
@@ -27,8 +28,8 @@ PI_TOP_POWER_OFF_MASK = 0X01
 ARG_DEVICE_LIST = ["battery", "system", "backlight"]
 ARG_COMMAND_LIST = {
     "battery": ["state","capacity","time"],
-    "system": ["state"],
-    "backlight": ["increase", "decrease", "on", "off"]
+    "system": ["state", "off"],
+    "backlight": ["state", "increase", "decrease", "on", "off", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
 }
 
 class RequestResult:
@@ -59,13 +60,13 @@ class HubState:
     def encode(self):
         result = self.brightness << 3
         if self.parityOf(result & PI_TOP_BRIGHTNESS_MASK):
-            result = result + PI_TOP_BRIGHTNESS_PARITY_MASK
+            result += PI_TOP_BRIGHTNESS_PARITY_MASK
         if self.power_off:
-            result = result + PI_TOP_POWER_OFF_MASK
+            result += PI_TOP_POWER_OFF_MASK
         if self.screen_off:
-            result = result + PI_TOP_SCREEN_OFF_MASK
+            result += PI_TOP_SCREEN_OFF_MASK
         if self.parityOf(result & 3):
-            result = result + PI_TOP_STATE_PARITY_MASK
+            result += PI_TOP_STATE_PARITY_MASK
         return result
 
     def parityOf(self, data):
@@ -140,6 +141,8 @@ def batteryGetState():
     result = RequestResult("Unknown")
     readAttempt = 1
     while result.data == "Unknown" and readAttempt <= PI_TOP_MAX_READ_ATTEMPTS:
+        if readAttempt > 1:
+            sleep(0.1)
         rawData = busGetData(PI_TOP_BATTERY_ADDRESS, PI_TOP_BATTERY_REGISTER_STATE)
 
         # TODO Research zen buddhism and acquire a better understanding of the logic below
@@ -167,6 +170,8 @@ def batteryGetCapacity():
     result = RequestResult()
     readAttempt = 1
     while result.data == None and readAttempt <= PI_TOP_MAX_READ_ATTEMPTS:
+        if readAttempt > 1:
+            sleep(0.1)
         rawData = busGetData(PI_TOP_BATTERY_ADDRESS, PI_TOP_BATTERY_REGISTER_CAPACITY)
         if rawData <= 100:
             result.data = rawData
@@ -187,6 +192,8 @@ def batteryGetTime():
         result = RequestResult()
         readAttempt = 1
         while result.data == None and readAttempt <= PI_TOP_MAX_READ_ATTEMPTS:
+            if readAttempt > 1:
+                sleep(0.1)
             if (batteryState.data == "Charging"):
                 rawData = busGetData(PI_TOP_BATTERY_ADDRESS, PI_TOP_BATTERY_REGISTER_CHARGING_TIME)
                 if (rawData <= 2400):
@@ -207,15 +214,35 @@ def batteryGetTime():
 
     return batteryState
 
-def systemGetState():
+def systemGetState(command = PI_TOP_HUB_COMMAND_GET_STATUS):
     result = RequestResult()
     readAttempt = 1
     while result.data == None and readAttempt <= PI_TOP_MAX_READ_ATTEMPTS:
-        rawData = spiWriteData([PI_TOP_HUB_COMMAND_GET_STATUS])
+        if readAttempt > 1:
+            sleep(0.1)
+        rawData = spiWriteData([command])
         if len(rawData) >= 1:
             state = HubState()
             state.decode(rawData[0])
             result.data = state
+            readAttempt += 1
+
+    if readAttempt > PI_TOP_MAX_READ_ATTEMPTS:
+        result.errorMessage = "Bus read failed %i times in a row." % readAttempt
+    else:
+        result.formattedData = "%s" % result.data
+
+    return result
+
+def systemSendCommand(command):
+    result = RequestResult()
+    readAttempt = 1
+    while result.data == None and readAttempt <= PI_TOP_MAX_READ_ATTEMPTS:
+        if readAttempt > 1:
+            sleep(0.1)
+        rawData = spiWriteData([command])
+        if len(rawData) >= 1:
+            result.data = rawData
             readAttempt += 1
 
     if readAttempt > PI_TOP_MAX_READ_ATTEMPTS:
@@ -242,17 +269,60 @@ if command not in ARG_COMMAND_LIST.get(device):
     quit(1)
 
 result = RequestResult()
+getStateFlag = False
 
 if device == "battery":
     if command == "state":
         result = batteryGetState()
-    if command == "capacity":
+    elif command == "capacity":
         result = batteryGetCapacity()
-    if command == "time":
+    elif command == "time":
         result = batteryGetTime()
 elif device == "system":
     if command == "state":
         result = systemGetState()
+    elif command == "off":
+        state = systemGetState()
+        getStateFlag = True
+        if state.errorMessage == None:
+            state.data.power_off = 1
+            result = systemSendCommand(state.data.encode())
+elif device == "backlight":
+    state = systemGetState()
+    getStateFlag = True
+    if state.errorMessage == None:
+        if command == "state":
+            if (state.data.screen_off == 0):
+                result = RequestResult(state.data.brightness, "On: %s" % state.data.brightness)
+            else:
+                result = RequestResult("Off", "Off")
+            getStateFlag = False
+        elif command == "increase":
+            state.data.screen_off = 0
+            if state.data.brightness < 10:
+                state.data.brightness+=1
+                result = systemSendCommand(state.data.encode())
+        elif command == "decrease":
+            state.data.screen_off = 0
+            if state.data.brightness > 1:
+                state.data.brightness-=1
+                result = systemSendCommand(state.data.encode())
+        elif command == "on":
+            state.data.screen_off = 0
+            state.data.brightness = 5
+            result = systemSendCommand(state.data.encode())
+        elif command == "off":
+            state.data.screen_off = 1
+            result = systemSendCommand(state.data.encode())
+        else:
+            state.data.screen_off = 0
+            state.data.brightness = int(command)
+            result = systemSendCommand(state.data.encode())
+
+if result.errorMessage == None and getStateFlag:
+    #Do it twice to ensure we get the fully updated system state back
+    systemGetState()
+    result = systemGetState()
 
 if result.errorMessage != None:
     print("Error: %s" % result.errorMessage, file=sys.stderr)
