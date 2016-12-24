@@ -25,11 +25,12 @@ PI_TOP_SCREEN_OFF_MASK = 0x02
 PI_TOP_POWER_OFF_MASK = 0X01
 
 # Valid Devices and Command lists
-ARG_DEVICE_LIST = ["battery", "system", "backlight"]
+ARG_DEVICE_LIST = ["battery", "system", "backlight", "lid"]
 ARG_COMMAND_LIST = {
     "battery": ["state","capacity","time"],
     "system": ["state", "off"],
-    "backlight": ["state", "increase", "decrease", "on", "off", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+    "backlight": ["state", "increase", "decrease", "on", "off", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+    "lid": ["state"]
 }
 
 class RequestResult:
@@ -129,11 +130,6 @@ def spiWriteData(data):
     spi.cshigh = False
     data = spi.xfer(data, spi.max_speed_hz)
     spi.cshigh = True
-
-    for chunk in data:
-        chunk_hex_str = '0x' + str(hex(chunk))[2:].zfill(2)
-        chunk_bin_str = '{0:b}'.format(int(chunk_hex_str[2:], 16)).zfill(8)
-        print("spi write returned %s" % chunk_bin_str)
 
     return data
 
@@ -287,6 +283,11 @@ elif device == "system":
         if state.errorMessage == None:
             state.data.power_off = 1
             result = systemSendCommand(state.data.encode())
+elif device == "lid":
+    state = systemGetState()
+    if state.errorMessage == None:
+        lidState = "Open" if state.data.lid_open == 1 else "Closed"
+        result = RequestResult(lidState, lidState)
 elif device == "backlight":
     state = systemGetState()
     getStateFlag = True
