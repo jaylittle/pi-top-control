@@ -15,8 +15,10 @@ PI_TOP_BATTERY_REGISTER_CHARGING_TIME = 0x13
 PI_TOP_BATTERY_REGISTER_CAPACITY = 0x0d
 PI_TOP_BATTERY_STATE_MASK = 0x20000000
 
+#Pi-Top Hub commands
 PI_TOP_HUB_COMMAND_GET_STATUS = 0xFF
 
+#Pi-Top Hub State Command Masks
 PI_TOP_BRIGHTNESS_PARITY_MASK = 0x80
 PI_TOP_BRIGHTNESS_MASK = 0x78
 PI_TOP_LID_OPEN_MASK = 0x04
@@ -110,28 +112,46 @@ def configSpi():
         spi.cshigh = True
         spi.lsbfirst = False
 
-def busGetData(address, register, length = 2):
+def busGetData(address, register, length = 2, ignoreZeroResult = False):
     configBus()
-    readAttempt = 1
-    success = False
-    data = None
+    result = None
 
-    if length == 1:
-        data = bus.read_byte_data(address, register)
-    elif length == 2:
-        data = bus.read_word_data(address, register)
-    else:
-        data = bus.read_i2c_block_data(address, register, length)
+    #Pull data, filtering out zero valued returns when desirable
+    while (result == None) \
+            or (ignoreZeroResult == False and isinstance(result, int) and result == 0) \
+            or (ignoreZeroResult == False and isinstance(result, list) and len(result) > 0 and result[0] != None and result[0] == 0):
+        if length == 1:
+            result = bus.read_byte_data(address, register)
+        elif length == 2:
+            result = bus.read_word_data(address, register)
+        else:
+            result = bus.read_i2c_block_data(address, register, length)
 
-    return data
+    return result
 
-def spiWriteData(data):
+def spiWriteData(data, ignoreZeroResult = False):
     configSpi()
-    spi.cshigh = False
-    data = spi.xfer(data, spi.max_speed_hz)
-    spi.cshigh = True
+    result = None
 
-    return data
+    # Pull data, filtering out zero valued returns when desirable
+    while (result == None) \
+            or (ignoreZeroResult == False and isinstance(result, int) and result == 0) \
+            or (ignoreZeroResult == False and isinstance(result, list) and len(result) > 0 and result[0] != None and result[0] == 0):
+        spi.cshigh = False
+        result = spi.xfer(data, spi.max_speed_hz)
+        spi.cshigh = True
+
+    return result
+
+def batteryProcessCommand(command):
+    if command == "state":
+        return batteryGetState()
+    elif command == "capacity":
+        return batteryGetCapacity()
+    elif command == "time":
+        return batteryGetTime()
+
+    return None
 
 def batteryGetState():
     result = RequestResult("Unknown")
@@ -210,13 +230,25 @@ def batteryGetTime():
 
     return batteryState
 
-def systemGetState(command = PI_TOP_HUB_COMMAND_GET_STATUS):
+def systemProcessCommand(command, afterState):
+    if afterState.errorMessage == None:
+        if command == "state":
+            return afterState
+        elif command == "off":
+            afterState.data.power_off = 1
+            return systemSendCommand(afterState.data.encode())
+    else:
+        return afterState
+
+    return None
+
+def systemGetState():
     result = RequestResult()
     readAttempt = 1
     while result.data == None and readAttempt <= PI_TOP_MAX_READ_ATTEMPTS:
         if readAttempt > 1:
             sleep(0.1)
-        rawData = spiWriteData([command])
+        rawData = spiWriteData([PI_TOP_HUB_COMMAND_GET_STATUS])
         if len(rawData) >= 1:
             result.data = HubState(rawData[0])
             readAttempt += 1
@@ -246,6 +278,52 @@ def systemSendCommand(command):
 
     return result
 
+def lidProcessCommand(command, afterState):
+    if afterState.errorMessage == None:
+        if command == "state":
+            lidState = "Open" if afterState.data.lid_open == 1 else "Closed"
+            return RequestResult(lidState, lidState)
+    else:
+        return afterState
+
+    return None
+
+def backlightProcessCommand(command, afterState):
+    if afterState.errorMessage == None:
+        # NOTE: Valid brightness values are between 1 and 10
+        if command == "state":
+            if (afterState.data.screen_off == 0):
+                return RequestResult(afterState.data.brightness, "On: %s" % afterState.data.brightness)
+            else:
+                return RequestResult("Off", "Off")
+        elif command == "increase":
+            afterState.data.screen_off = 0
+            if afterState.data.brightness < 10:
+                afterState.data.brightness+=1
+                return systemSendCommand(afterState.data.encode())
+        elif command == "decrease":
+            afterState.data.screen_off = 0
+            if afterState.data.brightness > 1:
+                afterState.data.brightness-=1
+                return systemSendCommand(afterState.data.encode())
+        elif command == "on":
+            # NOTE: Turning the backlight on doesnt set brightness above 0 which leaves the screen off, so we set it to 5 at the same time
+            afterState.data.screen_off = 0
+            afterState.data.brightness = 5
+            return systemSendCommand(afterState.data.encode())
+        elif command == "off":
+            # NOTE: Turning off backlight sets brightness to 0 automatically
+            afterState.data.screen_off = 1
+            return systemSendCommand(afterState.data.encode())
+        else:
+            afterState.data.screen_off = 0
+            afterState.data.brightness = int(command)
+            return systemSendCommand(afterState.data.encode())
+    else:
+        return afterState
+
+    return None
+
 # Check to see that minimum required number of arguments have been provided (script name is sys.argv[0])
 if len(sys.argv) <= 2:
     print("Error: Device and Command are both required arguments", file=sys.stderr)
@@ -262,8 +340,7 @@ if command not in ARG_COMMAND_LIST.get(device):
     print("Error: Command must be one of the following: %s" % ARG_COMMAND_LIST.get(device), file=sys.stderr)
     quit(1)
 
-result = RequestResult()
-getStateFlag = False
+result = None
 
 beforeState = None
 afterState = None
@@ -273,65 +350,23 @@ if device in DEVICES_REQUIRING_STATE:
     afterState = systemGetState()
 
 if device == "battery":
-    if command == "state":
-        result = batteryGetState()
-    elif command == "capacity":
-        result = batteryGetCapacity()
-    elif command == "time":
-        result = batteryGetTime()
+    result = batteryProcessCommand(command)
 elif device == "system":
-    if command == "state":
-        result = systemGetState()
-    elif command == "off":
-        state = systemGetState()
-        getStateFlag = True
-        if state.errorMessage == None:
-            state.data.power_off = 1
-            result = systemSendCommand(state.data.encode())
+    result = systemProcessCommand(command, afterState)
 elif device == "lid":
-    if afterState.errorMessage == None:
-        lidState = "Open" if afterState.data.lid_open == 1 else "Closed"
-        result = RequestResult(lidState, lidState)
+    result = lidProcessCommand(command, afterState)
 elif device == "backlight":
-    getStateFlag = True
-    if afterState.errorMessage == None:
-        # NOTE: Valid brightness values are between 1 and 10
-        if command == "state":
-            if (afterState.data.screen_off == 0):
-                result = RequestResult(afterState.data.brightness, "On: %s" % afterState.data.brightness)
-            else:
-                result = RequestResult("Off", "Off")
-            getStateFlag = False
-        elif command == "increase":
-            afterState.data.screen_off = 0
-            if afterState.data.brightness < 10:
-                afterState.data.brightness+=1
-                result = systemSendCommand(afterState.data.encode())
-        elif command == "decrease":
-            afterState.data.screen_off = 0
-            if afterState.data.brightness > 1:
-                afterState.data.brightness-=1
-                result = systemSendCommand(afterState.data.encode())
-        elif command == "on":
-            # NOTE: Turning the backlight on doesnt set brightness above 0 which leaves the screen off, so we set it to 5 at the same time
-            afterState.data.screen_off = 0
-            afterState.data.brightness = 5
-            result = systemSendCommand(afterState.data.encode())
-        elif command == "off":
-            # NOTE: Turning off backlight sets brightness to 0 automatically
-            afterState.data.screen_off = 1
-            result = systemSendCommand(afterState.data.encode())
-        else:
-            afterState.data.screen_off = 0
-            afterState.data.brightness = int(command)
-            result = systemSendCommand(afterState.data.encode())
+    result = backlightProcessCommand(command, afterState)
 
-if result.errorMessage == None and getStateFlag:
-    #Do it twice to ensure we get the current system state back
-    beforeState = systemGetState()
-    result = afterState = systemGetState()
+if result != None:
+    if device in DEVICES_REQUIRING_STATE and command != "state" and result.errorMessage == None:
+        #Do it twice to ensure we get the current system state back
+        beforeState = systemGetState()
+        result = afterState = systemGetState()
 
-if result.errorMessage != None:
-    print("Error: %s" % result.errorMessage, file=sys.stderr)
+    if result.errorMessage != None:
+        print("Error: %s" % result.errorMessage, file=sys.stderr)
+    else:
+        print(result.formattedData)
 else:
-    print(result.formattedData)
+    print("Error: Nothing happened. This is probably the result of a boneheaded bug.", file=sys.stderr)
