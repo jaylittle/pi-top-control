@@ -1,9 +1,11 @@
 #!/usr/bin/python
 
+import os
 import sys
 import smbus
 from spidev import SpiDev
 from time import sleep
+import subprocess
 
 # Pi-Top Battery Address & Registers
 PI_BUS = 1
@@ -16,7 +18,7 @@ PI_TOP_BATTERY_REGISTER_CAPACITY = 0x0d
 PI_TOP_BATTERY_STATE_MASK = 0x20000000
 
 #Pi-Top Hub commands
-PI_TOP_HUB_COMMAND_GET_STATUS = 0xFF
+PI_TOP_HUB_COMMAND_GET_STATUS = 0xff
 
 #Pi-Top Hub State Command Masks
 PI_TOP_BRIGHTNESS_PARITY_MASK = 0x80
@@ -26,13 +28,19 @@ PI_TOP_STATE_PARITY_MASK = 0x04
 PI_TOP_SCREEN_OFF_MASK = 0x02
 PI_TOP_POWER_OFF_MASK = 0X01
 
+# Pi-Top Speaker Address & Registers
+PI_TOP_SPEAKER_ADDRESS = 0x18
+PI_TOP_SPEAKER_REGISTER_WRITE_ENABLE = 0x00
+PI_TOP_SPEAKER_CONFIG_PATH = os.path.dirname(os.path.realpath(__file__)) + "/speaker.i2c"
+
 # Valid Devices and Command lists
-ARG_DEVICE_LIST = ["battery", "system", "backlight", "lid"]
+ARG_DEVICE_LIST = ["battery", "system", "backlight", "lid", "speaker"]
 ARG_COMMAND_LIST = {
     "battery": ["state","capacity","time"],
     "system": ["state", "off"],
     "backlight": ["state", "increase", "decrease", "on", "off", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
-    "lid": ["state"]
+    "lid": ["state"],
+    "speaker": ["left", "right", "mono"]
 }
 DEVICES_REQUIRING_STATE = ["system", "backlight", "lid"]
 
@@ -112,7 +120,7 @@ def configSpi():
         spi.cshigh = True
         spi.lsbfirst = False
 
-def busGetData(address, register, length = 2, ignoreZeroResult = False):
+def busReadData(address, register, length = 2, ignoreZeroResult = False):
     configBus()
     result = None
 
@@ -129,6 +137,13 @@ def busGetData(address, register, length = 2, ignoreZeroResult = False):
 
     return result
 
+def busWriteData(address, register, data):
+    configBus()
+    if isinstance(data, list):
+        bus.write_i2c_block_data(address, register, data)
+    else:
+        bus.write_byte_data(address, register, data)
+
 def spiWriteData(data, ignoreZeroResult = False):
     configSpi()
     result = None
@@ -140,6 +155,66 @@ def spiWriteData(data, ignoreZeroResult = False):
         spi.cshigh = False
         result = spi.xfer(data, spi.max_speed_hz)
         spi.cshigh = True
+
+    return result
+
+def speakerProcessCommand(command, address):
+    result = RequestResult()
+    mode = command[0].lower()
+
+    interface = None
+    for mix_output in runProcess(["/bin/bash", "-c", "amixer cget numid=3"]): # | grep "": values="" | cut -d'=' -f2")
+        mix_output_string = "%s" % mix_output
+        if "values=" in mix_output_string:
+            mix_output_fields = mix_output_string.split("=")
+            interface = mix_output_fields[1]
+
+    if interface != None:
+        if interface != "2":
+            runProcessBlocked(["/bin/bash", "-c", "amixer cset numid=3 2"])
+
+        if os.path.exists(PI_TOP_SPEAKER_CONFIG_PATH):
+            # Open the speaker for writing
+            busWriteData(address, PI_TOP_SPEAKER_REGISTER_WRITE_ENABLE, 0x01)
+
+            # Write applicable commands from speaker.i2c file
+            write_counter = 0
+            with open(PI_TOP_SPEAKER_CONFIG_PATH) as pbc:
+                for line in pbc:
+                    if (len(line) > 0) and (line[0].lower() == "w") or (line[0].lower() == mode):
+                        fields = line.split()
+                        if len(fields) > 3:
+                            values = [int(i, 16) for i in fields[3:]]
+                            # print("speaker bus write @ address %x : register %x : data %s" % (PI_TOP_SPEAKER_ADDRESS, int(fields[2], 16), values))
+                            busWriteData(PI_TOP_SPEAKER_ADDRESS, int(fields[2], 16), values)
+                            write_counter += 1
+
+            # Close the speaker for writing
+            busWriteData(address, PI_TOP_SPEAKER_REGISTER_WRITE_ENABLE, 0x00)
+
+            result.data = write_counter
+            result.formattedData = "%i speaker writes" % result.data
+        else:
+            result.errorMessage = "Required speaker.i2c file does not exist in script directory"
+    else:
+        result.errorMessage = "ALSA mixer call failed to produce expected output."
+
+    return result
+
+def runProcess(exe):
+    p = subprocess.Popen(exe, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    while(True):
+      retcode = p.poll() #returns None while subprocess is running
+      line = p.stdout.readline()
+      yield line
+      if(retcode is not None):
+        break
+
+def runProcessBlocked(exe):
+    result = ""
+    for proc_output in runProcess(exe):
+        proc_output_string = "%s" % proc_output
+        result = result + proc_output_string + "\n"
 
     return result
 
@@ -159,7 +234,7 @@ def batteryGetState():
     while result.data == "Unknown" and readAttempt <= PI_TOP_MAX_READ_ATTEMPTS:
         if readAttempt > 1:
             sleep(0.1)
-        rawData = busGetData(PI_TOP_BATTERY_ADDRESS, PI_TOP_BATTERY_REGISTER_STATE)
+        rawData = busReadData(PI_TOP_BATTERY_ADDRESS, PI_TOP_BATTERY_REGISTER_STATE)
 
         # TODO Research zen buddhism and acquire a better understanding of the logic below
         if (rawData & PI_TOP_BATTERY_STATE_MASK == 0):
@@ -188,7 +263,7 @@ def batteryGetCapacity():
     while result.data == None and readAttempt <= PI_TOP_MAX_READ_ATTEMPTS:
         if readAttempt > 1:
             sleep(0.1)
-        rawData = busGetData(PI_TOP_BATTERY_ADDRESS, PI_TOP_BATTERY_REGISTER_CAPACITY)
+        rawData = busReadData(PI_TOP_BATTERY_ADDRESS, PI_TOP_BATTERY_REGISTER_CAPACITY)
         if rawData <= 100:
             result.data = rawData
 
@@ -211,11 +286,11 @@ def batteryGetTime():
             if readAttempt > 1:
                 sleep(0.1)
             if (batteryState.data == "Charging"):
-                rawData = busGetData(PI_TOP_BATTERY_ADDRESS, PI_TOP_BATTERY_REGISTER_CHARGING_TIME)
+                rawData = busReadData(PI_TOP_BATTERY_ADDRESS, PI_TOP_BATTERY_REGISTER_CHARGING_TIME)
                 if (rawData <= 2400):
                     result.data = rawData
             elif (batteryState.data == "Discharging"):
-                rawData = busGetData(PI_TOP_BATTERY_ADDRESS, PI_TOP_BATTERY_REGISTER_DISCHARGE_TIME)
+                rawData = busReadData(PI_TOP_BATTERY_ADDRESS, PI_TOP_BATTERY_REGISTER_DISCHARGE_TIME)
                 if (rawData <= 1800):
                     result.data = rawData
 
@@ -299,12 +374,12 @@ def backlightProcessCommand(command, afterState):
         elif command == "increase":
             afterState.data.screen_off = 0
             if afterState.data.brightness < 10:
-                afterState.data.brightness+=1
+                afterState.data.brightness += 1
                 return systemSendCommand(afterState.data.encode())
         elif command == "decrease":
             afterState.data.screen_off = 0
             if afterState.data.brightness > 1:
-                afterState.data.brightness-=1
+                afterState.data.brightness -= 1
                 return systemSendCommand(afterState.data.encode())
         elif command == "on":
             # NOTE: Turning the backlight on doesnt set brightness above 0 which leaves the screen off, so we set it to 5 at the same time
@@ -340,6 +415,10 @@ if command not in ARG_COMMAND_LIST.get(device):
     print("Error: Command must be one of the following: %s" % ARG_COMMAND_LIST.get(device), file=sys.stderr)
     quit(1)
 
+if (device == "speaker") and (len(sys.argv) <= 3):
+    print("Error: Speaker commands require a 3rd param with the address of the device", file=sys.stderr)
+    quit(1)
+
 result = None
 
 beforeState = None
@@ -357,6 +436,8 @@ elif device == "lid":
     result = lidProcessCommand(command, afterState)
 elif device == "backlight":
     result = backlightProcessCommand(command, afterState)
+elif device == "speaker":
+    result = speakerProcessCommand(command, int(sys.argv[3], 16))
 
 if result != None:
     if device in DEVICES_REQUIRING_STATE and command != "state" and result.errorMessage == None:
@@ -364,9 +445,12 @@ if result != None:
         beforeState = systemGetState()
         result = afterState = systemGetState()
 
-    if result.errorMessage != None:
-        print("Error: %s" % result.errorMessage, file=sys.stderr)
-    else:
+    if result.errorMessage == None:
         print(result.formattedData)
+        exit(0)
+    else:
+        print("Error: %s" % result.errorMessage, file=sys.stderr)
+        exit(1)
 else:
     print("Error: Nothing happened. This is probably the result of a boneheaded bug.", file=sys.stderr)
+    exit(1)
