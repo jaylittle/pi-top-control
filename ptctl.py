@@ -15,7 +15,7 @@ PI_TOP_BATTERY_REGISTER_STATE = 0x0a
 PI_TOP_BATTERY_REGISTER_DISCHARGE_TIME = 0x12
 PI_TOP_BATTERY_REGISTER_CHARGING_TIME = 0x13
 PI_TOP_BATTERY_REGISTER_CAPACITY = 0x0d
-PI_TOP_BATTERY_STATE_MASK = 0x20000000
+PI_TOP_BATTERY_STATE_MASK = 0x8000
 
 #Pi-Top Hub commands
 PI_TOP_HUB_COMMAND_GET_STATUS = 0xff
@@ -120,14 +120,14 @@ def configSpi():
         spi.cshigh = True
         spi.lsbfirst = False
 
-def busReadData(address, register, length = 2, ignoreZeroResult = False):
+def busReadData(address, register, ignoreZeroResult = True, length = 2):
     configBus()
     result = None
 
     #Pull data, filtering out zero valued returns when desirable
     while (result == None) \
-            or (ignoreZeroResult == False and isinstance(result, int) and result == 0) \
-            or (ignoreZeroResult == False and isinstance(result, list) and len(result) > 0 and result[0] != None and result[0] == 0):
+            or (ignoreZeroResult == True and isinstance(result, int) and result == 0) \
+            or (ignoreZeroResult == True and isinstance(result, list) and len(result) > 0 and result[0] != None and result[0] == 0):
         if length == 1:
             result = bus.read_byte_data(address, register)
         elif length == 2:
@@ -144,14 +144,14 @@ def busWriteData(address, register, data):
     else:
         bus.write_byte_data(address, register, data)
 
-def spiWriteData(data, ignoreZeroResult = False):
+def spiWriteData(data, ignoreZeroResult = True):
     configSpi()
     result = None
 
     # Pull data, filtering out zero valued returns when desirable
     while (result == None) \
-            or (ignoreZeroResult == False and isinstance(result, int) and result == 0) \
-            or (ignoreZeroResult == False and isinstance(result, list) and len(result) > 0 and result[0] != None and result[0] == 0):
+            or (ignoreZeroResult == True and isinstance(result, int) and result == 0) \
+            or (ignoreZeroResult == True and isinstance(result, list) and len(result) > 0 and result[0] != None and result[0] == 0):
         spi.cshigh = False
         result = spi.xfer(data, spi.max_speed_hz)
         spi.cshigh = True
@@ -231,7 +231,7 @@ def batteryProcessCommand(command):
 def batteryGetState():
     result = RequestResult("Unknown")
     readAttempt = 1
-    while result.data == "Unknown" and readAttempt <= PI_TOP_MAX_READ_ATTEMPTS:
+    while (result.data == "Unknown") and (readAttempt <= PI_TOP_MAX_READ_ATTEMPTS):
         if readAttempt > 1:
             sleep(0.1)
         rawData = busReadData(PI_TOP_BATTERY_ADDRESS, PI_TOP_BATTERY_REGISTER_STATE)
