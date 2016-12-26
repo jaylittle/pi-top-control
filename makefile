@@ -1,6 +1,6 @@
 ROOTDIR :=
 TARGETDIR := /opt/ptctl
-SERVICEDIR := /lib/systemd/system
+SERVICEDIR := /usr/lib/systemd/system
 RULESDIR := /etc/udev/rules.d
 
 SYSTEMCTL := $(shell which systemctl)
