@@ -26,7 +26,6 @@ install: ptctl.py
 
 uninstall:
 	test -d ${ROOTDIR}/${TARGETDIR} && rm -rf ${ROOTDIR}/${TARGETDIR}
-	test $(shell grep "i2c:" ${ROOTDIR}/etc/group | wc -l) -gt 0 && groupdel i2c
 	test -x ${SYSTEMCTL} && systemctl disable ptctl-poweroff.service
 	test -x ${SYSTEMCTL} && rm ${ROOTDIR}/${SERVICEDIR}/ptctl-poweroff.service
 	test -x ${UDEVADM} && rm ${ROOTDIR}/${RULESDIR}/10-i2c_group.rules
