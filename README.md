@@ -14,23 +14,23 @@ This script supports controlling/querying the following aspects of the Pi-Top Hu
 
 # Requirements
 
-###1. Pi-Top and rpi3
+### 1. Pi-Top and rpi3
  
 This script has been written and tested on a Pi-Top system using a Raspberry Pi 3.
 It may work with a Pi-Top Ceed and it may work with an Raspberry Pi 2, but I have
 neither device in my possession and am unable to adequately test as a result.
 
-###2. Linux
+### 2. Linux
 
 In theory this script will work on Raspbian provided the appropriate system mods are made.
 However it is primarily designed to facilitate making Pi-Top work on non Raspbian based
 distributions.  To that end, this script has been primarily tested using Arch Linux.
 
-###3. Python 3 and modules
+### 3. Python 3 and modules
 
 Python 3 and the smbus and spidev modules are required to run this script.
 
-###4. Access to the /dev/i2c-* and /dev/spidev* devices
+### 4. Access to the /dev/i2c-* and /dev/spidev* devices
 
 You can either run these scripts as root or install an appropriate udev rule which provides access to non-root
 users.  An example of a possible udev rule is included as part of this repository.
