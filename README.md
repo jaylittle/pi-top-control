@@ -1,3 +1,9 @@
+# Warning: Unmaintained Code Ahead
+
+As I no longer have a pi-top to work with, I am no longer maintaining this code base.  If you'd like to
+see it changed and updated in some significant way, you'll need to fork the repo and continuing working
+off your own instance of it.
+
 # Pi-Top Control
 Are you interested in running a non-Raspbian based distribution on your pi-top device? If so, then this
 is the repository for you.  After running into various difficulties when it came to making the existing
